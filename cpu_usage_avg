@@ -160,8 +160,7 @@ for i in range(0,len(hostIdList)):
         cpu_usage.append("{}".format(""))
     else:
             cpu_usage.append(int(history[i]["value"]))
-                
-#res = [eval(i) for i in cpu_usage]
+print(len(cpu_usage))
 #Average of CPU-Usage every 10 minutes:
 avgs = {}
 sum=k=0
