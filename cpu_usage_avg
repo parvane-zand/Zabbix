@@ -1,0 +1,182 @@
+import argparse
+import datetime
+from encodings import utf_8
+import sys
+import time
+import os 
+import csv
+import math
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import plotly.express as px
+
+from pyzabbix import ZabbixAPI
+import requests
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+def login(zapi, username, password):
+    try:
+        zapi.session.verify = False
+        zapi.login(username, password)
+        print("login succeed.")
+    except:
+        print("zabbix server is not reachable: ")
+        sys.exit()
+
+server = "https://nms.sic.net/"
+username = "a.khaleghi"
+password = "Aa123456"
+hostname = "cloud-prod-mon-s3"
+key = "1"
+datetime1 = "2022-10-21 00:00:00"
+datetime2 = "2022-10-21 23:59:59"
+output = ""
+
+print("login to zabbix server %s" % server)
+zapi = ZabbixAPI(server)
+login(zapi, username, password)
+
+def getItems(zapi, key, hostid, hostname):
+    items = zapi.item.get(search={"key_": key}, hostids=hostid, output="extend")
+    if len(items) == 0:
+        print(f"item key: {key} not found in hostname: {hostname}")
+        sys.exit()
+    else:
+        return items
+
+def getAllItems(zapi, hostid):
+    items = zapi.item.get(search={}, sortfield="name", hostids=hostid, output="extend")
+    return items
+
+def exportItemToCSV(items, output):
+    f = open(output, "w",encoding='utf-8')
+    inc = 0
+    f.write("id;name;key_;description\n")  # csv header
+    for item in items:
+        f.write("{};{};{}\n".format(item["itemid"].strip(), item["name"].strip(), item["key_"].strip()))
+        inc = inc + 1
+    print("exported %i items to %s" % (inc, output))
+    f.close()
+
+def exportHistoryToCSV(historys, key, output):
+    f = open(output, "w",encoding='utf-8')
+    inc = 0
+    f.write("key;timestamp;valuei\n")  # csv header
+    for history in historys:
+        f.write("{};{};{}\n".format(key, history["clock"], history["value"]))
+        inc = inc + 1
+    print("exported %i history to %s" % (inc, output))
+    f.close()
+
+def exportAllHostToCSV(zapi, output):
+    f = open(output, "w",encoding='utf-8')
+    inc = 0
+    f.write("hostid;host;name;description\n")  # csv header
+    hostList = zapi.host.get(filter={}, output="extend")
+    for host in hostList:
+        f.write("{};{};{}\n".format(host["hostid"].strip(), host["host"].strip(), host["name"].strip()))
+        inc = inc + 1
+    print("exported %i hosts to %s" % (inc, output))
+    f.close()
+
+def convertTimeStamp(inputTime):
+    if inputTime == "":
+        return ""
+    try:
+        tmpDate = datetime.datetime.strptime(inputTime, "%Y-%m-%d %H:%M:%S")
+        timestamp = int(time.mktime(tmpDate.timetuple()))
+    except:
+        print("time data %s does not match format Y-m-d H:M:S, exit" % (datetime))
+        sys.exit()
+
+    return timestamp
+
+def assignTimeRange(inputParameters, datetime1, datetime2):
+    timestamp1 = convertTimeStamp(datetime1)
+    timestamp2 = convertTimeStamp(datetime2)
+
+    # only timestamp1
+    if timestamp1 and not timestamp2:
+        inputParameters["time_from"] = timestamp1
+        inputParameters["time_till"] = convertTimeStamp(time.time())  # current time
+    # only timestamp2
+    elif not timestamp1 and timestamp2:
+        inputParameters["time_from"] = timestamp2
+        inputParameters["time_till"] = timestamp2
+    # no inserted both timestamps
+    elif not timestamp1 and not timestamp2:
+        inputParameters["time_from"] = convertTimeStamp(time.time())  # current time
+        inputParameters["time_till"] = convertTimeStamp(time.time())  # current time
+    # inserted both timestamps
+    else:
+        inputParameters["time_from"] = timestamp1
+        inputParameters["time_till"] = timestamp2
+
+outFile = "C://Users/pzand/Desktop/All_host_list2.csv"
+exportAllHostToCSV(zapi, outFile.encode())
+
+f = open(outFile)
+csvReader = csv.reader(f, delimiter=';')
+header = []
+header = next(csvReader)
+
+hostIdList = []
+hostNameList = []
+
+for row in csvReader:
+    if row[2].startswith("host-"):
+        hostIdList.append(row[0])
+        hostNameList.append(row[1])
+f.close()
+#print(hostIdList)
+cpu_usage=[]
+
+datetime1 = "2022-10-" + '21' + " 00:00:00"
+datetime2 = "2022-10-" + '21' + " 00:09:59"
+for i in range(0,len(hostIdList)):
+    items = getItems(zapi, "vmware.hv.cpu.usage", hostIdList[i], hostNameList[i])
+
+    #items = getItems(zapi, "vmware.hv.memory.used", hostIdList[i], hostNameList[i])
+    item = items[0]
+    #print("item is: %s" % (item))
+    
+    inputParameters = {}
+    inputParameters["history"] = item["value_type"]
+    inputParameters["output"] = "extend"
+    inputParameters["itemids"] = [item["itemid"]]
+
+    assignTimeRange(inputParameters, datetime1, datetime2)
+
+    # get history
+    history = zapi.history.get(**inputParameters)
+
+    #print(hostNameList[i])
+    #print(history[0]["value"])
+
+    if not history:
+        cpu_usage.append("{}".format(""))
+    else:
+            cpu_usage.append(int(history[i]["value"]))
+                
+#res = [eval(i) for i in cpu_usage]
+#Average of CPU-Usage every 10 minutes:
+avgs = {}
+sum=k=0
+
+for k in range(0,int(len(cpu_usage)/10)):
+    for i in range(10*k,10*k+10):
+        sum = sum + int(cpu_usage[i]/10**9) #Hz to GHz
+    avg = sum/10
+    avgs[k+1]=avg
+    sum=0
+
+print(avgs)
+
+plt.bar(range(len(avgs)), list(avgs.values()), align='center')
+plt.xticks(range(len(avgs)), list(avgs.keys()))
+plt.xlabel("Number of 10-minute Repetitions")
+plt.ylabel("CPU Usage GHz")
+plt.show()
